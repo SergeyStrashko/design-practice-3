@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"net/http"
 	"time"
 
-	"github.com/roman-mazur/design-practice-3-template/httptools"
-	"github.com/roman-mazur/design-practice-3-template/signal"
+	"github.com/SergeyStrashko/design-practice-3/httptools"
+	"github.com/SergeyStrashko/design-practice-3/signal"
 )
 
 var (
@@ -23,10 +24,28 @@ var (
 
 var (
 	timeout = time.Duration(*timeoutSec) * time.Second
-	serversPool = []string{
+	serverPool = []string{
 		"server1:8080",
 		"server2:8080",
 		"server3:8080",
+	}
+
+	serverTraffic = []int64{
+		0,
+		0,
+		0,
+	}
+
+	serverConnection = []int64{
+		0,
+		0,
+		0,
+	}
+
+	serverHealthStatus = []bool {
+		true,
+		true,
+		true,
 	}
 )
 
@@ -37,7 +56,7 @@ func scheme() string {
 	return "http"
 }
 
-func health(dst string) bool {
+func health(dst string, i int) bool {
 	ctx, _ := context.WithTimeout(context.Background(), timeout)
 	req, _ := http.NewRequestWithContext(ctx, "GET",
 		fmt.Sprintf("%s://%s/health", scheme(), dst), nil)
@@ -45,13 +64,25 @@ func health(dst string) bool {
 	if err != nil {
 		return false
 	}
+
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp.Body)
+	traffic, err := strconv.ParseInt(string(buf.Bytes()), 10, 64)
+
+	if err != nil {
+		return false
+	}
+	log.Printf("Response health %s: %d", dst, traffic)
+
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
+
+	serverTraffic[i] = traffic
 	return true
 }
 
-func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
+func forward(dst string, rw http.ResponseWriter, r *http.Request, index int64) error {
 	ctx, _ := context.WithTimeout(r.Context(), timeout)
 	fwdRequest := r.Clone(ctx)
 	fwdRequest.RequestURI = ""
@@ -76,30 +107,72 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			log.Printf("Failed to write response: %s", err)
 		}
+
+		serverConnection[index] += 1
+
 		return nil
 	} else {
+		serverConnection[index] -= 1
+
 		log.Printf("Failed to get response from %s: %s", dst, err)
 		rw.WriteHeader(http.StatusServiceUnavailable)
 		return err
 	}
 }
 
+func getServer() (string, error) {
+	var serverIndex = 0;
+
+	for index := 0; index < 3; index++ {
+		log.Printf("Connections of server %d: %d", i, serverTraffic[index])
+		if serverHealthStatus[index] {
+			if serverConnection[index] < serverConnection[serverIndex] {
+				serverIndex = index
+			}
+		}
+	}
+
+	if !serverHealthStatus[serverIndex] {
+		return serverPool[0], errors.errors.New("There is no healthy servers")
+	}
+
+	return serverPool[serverIndex], nil
+}
+
 func main() {
 	flag.Parse()
 
-	// TODO: Використовуйте дані про стан сервреа, щоб підтримувати список тих серверів, яким можна відправляти ззапит.
-	for _, server := range serversPool {
-		server := server
+	go func() {
+		for range time.Tick(10 * time.Hour) {
+			serverTraffic[0] = 0
+			serverTraffic[1] = 0
+			serverTraffic[2] = 0
+
+			serverConnection[0] = 0
+			serverConnection[1] = 0
+			serverConnection[2] = 0
+		}
+	}()
+
+	for index := 0; index < 3; index++ {
+		server := serversPool[index]
 		go func() {
 			for range time.Tick(10 * time.Second) {
-				log.Println(server, health(server))
+				serverHealthStatus[index] = health(server, index)
 			}
 		}()
 	}
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		// TODO: Рееалізуйте свій алгоритм балансувальника.
-		forward(serversPool[0], rw, r)
+		var Server, err = getServer()
+		if err == nil {
+			log.Printf("Forwarding to server: %s", Server.url)
+			forward(&Server, rw, r, index)
+		} else {
+			log.Printf("Request error: %s", err.Error())
+			rw.WriteHeader(http.StatusInternalServerError)
+			rw.Write([]byte(err.Error()))
+		}
 	}))
 
 	log.Println("Starting load balancer...")
