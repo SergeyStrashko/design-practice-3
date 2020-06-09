@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"net/http"
 	"time"
+	"errors"
 
 	"github.com/SergeyStrashko/design-practice-3/httptools"
 	"github.com/SergeyStrashko/design-practice-3/signal"
