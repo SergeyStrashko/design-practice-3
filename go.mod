@@ -1,3 +1,3 @@
-module github.com/roman-mazur/design-practice-3-template
+module github.com/SergeyStrashko/design-practice-3
 
 go 1.14
